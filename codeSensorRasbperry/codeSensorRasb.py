@@ -2,20 +2,21 @@ import RPi.GPIO as GPIO
 import time
 import paho.mqtt.client as mqtt
 import json
+import threading
 from dotenv import load_dotenv
 import os
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-# Configuración fija de los pines GPIO
+# Configuración de los pines GPIO
 TRIG_PIN = 23
 ECHO_PIN = 24
 TOUCH_PIN = 18
 
-# Configuración de MQTT desde el archivo .env
-BROKER = os.getenv("BROKER", "localhost")  # Valor por defecto: localhost
-PORT = int(os.getenv("PORT", 1883))  # Valor por defecto: 1883
+# Configuración de MQTT desde .env
+BROKER = os.getenv("BROKER", "localhost")
+PORT = int(os.getenv("PORT", 1883))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "default_user")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "default_password")
 TOPIC_DISTANCIA = os.getenv("TOPIC_DISTANCIA", "sensor/distancia")
@@ -39,55 +40,54 @@ def medir_distancia():
     GPIO.output(TRIG_PIN, GPIO.HIGH)
     time.sleep(0.00001)
     GPIO.output(TRIG_PIN, GPIO.LOW)
+    
+    inicio, fin = 0, 0
     while GPIO.input(ECHO_PIN) == GPIO.LOW:
         inicio = time.time()
     while GPIO.input(ECHO_PIN) == GPIO.HIGH:
         fin = time.time()
+
     tiempo_transcurrido = fin - inicio
     distancia = (tiempo_transcurrido * 34300) / 2
     return distancia
 
 # Función para manejar eventos táctiles
 def toque_detectado(channel):
-    print("¡Toque detectado en el botón táctil!")
+    print("¡Toque detectado!")
     mensaje_toque = json.dumps({"Llamada": True})
     client.publish(TOPIC_TOQUE, mensaje_toque)
 
 GPIO.add_event_detect(TOUCH_PIN, GPIO.RISING, callback=toque_detectado)
-estado_distancia = None
 
-# Función para verificar sensores
-def verificar_sensores():
-    global estado_distancia
-    if GPIO.input(TOUCH_PIN) == GPIO.HIGH:
-        mensaje_toque = json.dumps({"estado": True})
-        client.publish(TOPIC_TOQUE, mensaje_toque)
-    try:
-        distancia = medir_distancia()
-        print(distancia)
-        if distancia > 0:
-            if distancia < 20:
-                if estado_distancia != True:
-                    mensaje_distancia = json.dumps({"Movimiento": True})
-                    client.publish(TOPIC_DISTANCIA, mensaje_distancia)
-                    estado_distancia = True
-            elif distancia > 20:
-                if estado_distancia != False:
-                    mensaje_distancia = json.dumps({"Movimiento": False})
-                    client.publish(TOPIC_DISTANCIA, mensaje_distancia)
-                    estado_distancia = False
-    except Exception as e:
-        print(f"Error: {e}")
-
-# Ejecución principal
-print("Esperando detección de distancia o toque...")
-try:
+# Hilo para monitorear sensores
+def sensor_loop():
+    estado_distancia = None
     while True:
-        verificar_sensores()
+        try:
+            distancia = medir_distancia()
+            print(f"Distancia: {distancia:.2f} cm")
+            
+            if distancia > 0:
+                if distancia < 20 and estado_distancia != True:
+                    client.publish(TOPIC_DISTANCIA, json.dumps({"Movimiento": True}))
+                    estado_distancia = True
+                elif distancia >= 20 and estado_distancia != False:
+                    client.publish(TOPIC_DISTANCIA, json.dumps({"Movimiento": False}))
+                    estado_distancia = False
+        except Exception as e:
+            print(f"Error en sensor: {e}")
+        
         time.sleep(1)
 
+# Iniciar hilo de sensores
+sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
+sensor_thread.start()
+
+try:
+    while True:
+        time.sleep(1)
 except KeyboardInterrupt:
-    print("Programa terminado")
+    print("Terminando programa...")
 
 finally:
     GPIO.cleanup()
