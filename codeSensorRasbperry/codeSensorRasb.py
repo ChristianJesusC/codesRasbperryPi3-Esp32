@@ -33,23 +33,26 @@ client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 client.connect(BROKER, PORT, 60)
 
-# Función para medir distancia
-def medir_distancia():
-    GPIO.output(TRIG_PIN, GPIO.LOW)
-    time.sleep(0.5)
-    GPIO.output(TRIG_PIN, GPIO.HIGH)
-    time.sleep(0.00001)
-    GPIO.output(TRIG_PIN, GPIO.LOW)
-    
-    inicio, fin = 0, 0
-    while GPIO.input(ECHO_PIN) == GPIO.LOW:
-        inicio = time.time()
-    while GPIO.input(ECHO_PIN) == GPIO.HIGH:
-        fin = time.time()
+lock = threading.Lock()  # Para evitar accesos simultáneos
+sensor_event = threading.Event()
 
-    tiempo_transcurrido = fin - inicio
-    distancia = (tiempo_transcurrido * 34300) / 2
-    return distancia
+def medir_distancia():
+    with lock:
+        GPIO.output(TRIG_PIN, GPIO.LOW)
+        time.sleep(0.5)
+        GPIO.output(TRIG_PIN, GPIO.HIGH)
+        time.sleep(0.00001)
+        GPIO.output(TRIG_PIN, GPIO.LOW)
+        
+        inicio, fin = 0, 0
+        while GPIO.input(ECHO_PIN) == GPIO.LOW:
+            inicio = time.time()
+        while GPIO.input(ECHO_PIN) == GPIO.HIGH:
+            fin = time.time()
+
+        tiempo_transcurrido = fin - inicio
+        distancia = (tiempo_transcurrido * 34300) / 2
+        return distancia
 
 # Función para manejar eventos táctiles
 def toque_detectado(channel):
@@ -62,7 +65,7 @@ GPIO.add_event_detect(TOUCH_PIN, GPIO.RISING, callback=toque_detectado)
 # Hilo para monitorear sensores
 def sensor_loop():
     estado_distancia = None
-    while True:
+    while sensor_event.is_set():
         try:
             distancia = medir_distancia()
             print(f"Distancia: {distancia:.2f} cm")
@@ -79,7 +82,7 @@ def sensor_loop():
         
         time.sleep(1)
 
-# Iniciar hilo de sensores
+sensor_event.set()
 sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
 sensor_thread.start()
 
@@ -88,6 +91,8 @@ try:
         time.sleep(1)
 except KeyboardInterrupt:
     print("Terminando programa...")
+    sensor_event.clear()  # Detiene el hilo de sensores
+    sensor_thread.join()  # Espera a que el hilo termine
 
 finally:
     GPIO.cleanup()
