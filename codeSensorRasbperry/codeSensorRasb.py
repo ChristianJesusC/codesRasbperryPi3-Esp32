@@ -36,6 +36,18 @@ client.connect(BROKER, PORT, 60)
 lock = threading.Lock()  # Para evitar accesos simultáneos
 sensor_event = threading.Event()
 
+def mqtt_reconnect_loop():
+    while True:
+        time.sleep(30)
+        try:
+            print("Reconectando a MQTT...")
+            client.disconnect()
+            time.sleep(2)
+            client.connect(BROKER, PORT, 60)
+            print("Reconectado con exito")
+        except Exception as e:
+            print(f"Error al reconectar MQTT: {e}")
+
 def medir_distancia():
     with lock:
         GPIO.output(TRIG_PIN, GPIO.LOW)
@@ -84,7 +96,10 @@ def sensor_loop():
 
 sensor_event.set()
 sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
+mqtt_thread = threading.Thread(target=mqtt_reconnect_loop, daemon=True)
+
 sensor_thread.start()
+mqtt_thread.start()
 
 try:
     while True:
