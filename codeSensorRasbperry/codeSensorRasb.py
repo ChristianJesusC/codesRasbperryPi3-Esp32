@@ -26,25 +26,26 @@ TOPIC_TOQUE = os.getenv("TOPIC_TOQUE", "sensor/toque")
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(TRIG_PIN, GPIO.OUT)
 GPIO.setup(ECHO_PIN, GPIO.IN)
-GPIO.setup(TOUCH_PIN, GPIO.IN)
+GPIO.setup(TOUCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 # Configuración del cliente MQTT
 client = mqtt.Client()
 client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 client.connect(BROKER, PORT, 60)
+client.loop_start()  # Importante para mantener la conexión activa
 
-lock = threading.Lock()  # Para evitar accesos simultáneos
+lock = threading.Lock()
 sensor_event = threading.Event()
+sensor_event.set()
 
 def mqtt_reconnect_loop():
     while True:
         time.sleep(30)
         try:
-            print("Reconectando a MQTT...")
-            client.disconnect()
-            time.sleep(2)
-            client.connect(BROKER, PORT, 60)
-            print("Reconectado con exito")
+            if not client.is_connected():
+                print("Reconectando a MQTT...")
+                client.reconnect()
+                print("Reconectado con éxito")
         except Exception as e:
             print(f"Error al reconectar MQTT: {e}")
 
@@ -56,7 +57,7 @@ def medir_distancia():
         time.sleep(0.00001)
         GPIO.output(TRIG_PIN, GPIO.LOW)
         
-        inicio, fin = 0, 0
+        inicio = time.time()
         while GPIO.input(ECHO_PIN) == GPIO.LOW:
             inicio = time.time()
         while GPIO.input(ECHO_PIN) == GPIO.HIGH:
@@ -64,6 +65,9 @@ def medir_distancia():
 
         tiempo_transcurrido = fin - inicio
         distancia = (tiempo_transcurrido * 34300) / 2
+        
+        if distancia < 0 or distancia > 400:
+            return None  
         return distancia
 
 # Función para manejar eventos táctiles
@@ -72,7 +76,7 @@ def toque_detectado(channel):
     mensaje_toque = json.dumps({"Llamada": True})
     client.publish(TOPIC_TOQUE, mensaje_toque)
 
-GPIO.add_event_detect(TOUCH_PIN, GPIO.RISING, callback=toque_detectado)
+GPIO.add_event_detect(TOUCH_PIN, GPIO.FALLING, callback=toque_detectado, bouncetime=300)
 
 # Hilo para monitorear sensores
 def sensor_loop():
@@ -80,9 +84,9 @@ def sensor_loop():
     while sensor_event.is_set():
         try:
             distancia = medir_distancia()
-            print(f"Distancia: {distancia:.2f} cm")
-            
-            if distancia > 0:
+            if distancia is not None:
+                print(f"Distancia: {distancia:.2f} cm")
+                
                 if distancia < 20 and estado_distancia != True:
                     client.publish(TOPIC_DISTANCIA, json.dumps({"Movimiento": True}))
                     estado_distancia = True
@@ -94,7 +98,6 @@ def sensor_loop():
         
         time.sleep(1)
 
-sensor_event.set()
 sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
 mqtt_thread = threading.Thread(target=mqtt_reconnect_loop, daemon=True)
 
@@ -106,9 +109,8 @@ try:
         time.sleep(1)
 except KeyboardInterrupt:
     print("Terminando programa...")
-    sensor_event.clear()  # Detiene el hilo de sensores
-    sensor_thread.join()  # Espera a que el hilo termine
-
+    sensor_event.clear()
+    sensor_thread.join()
 finally:
     GPIO.cleanup()
     client.disconnect()
